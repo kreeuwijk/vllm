@@ -6,7 +6,7 @@
 # docs/contributing/dockerfile/dockerfile.md and
 # docs/assets/contributing/dockerfile-stages-dependency.png
 
-ARG CUDA_VERSION=12.8.1
+ARG CUDA_VERSION=12.9.1
 ARG PYTHON_VERSION=3.12
 
 # By parameterizing the base images, we allow third-party to use their own
@@ -15,7 +15,7 @@ ARG PYTHON_VERSION=3.12
 #
 # Example:
 # docker build --build-arg BUILD_BASE_IMAGE=registry.acme.org/mirror/nvidia/cuda:${CUDA_VERSION}-devel-ubuntu20.04
-ARG BUILD_BASE_IMAGE=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu20.04
+ARG BUILD_BASE_IMAGE=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04
 ARG FINAL_BASE_IMAGE=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04
 
 # By parameterizing the Deadsnakes repository URL, we allow third-party to use
@@ -83,7 +83,7 @@ ARG GET_PIP_URL
 RUN echo 'tzdata tzdata/Areas select America' | debconf-set-selections \
     && echo 'tzdata tzdata/Zones/America select Los_Angeles' | debconf-set-selections \
     && apt-get update -y \
-    && apt-get install -y ccache software-properties-common git curl sudo \
+    && apt-get install -y ccache software-properties-common git curl sudo wget \
     && if [ ! -z ${DEADSNAKES_MIRROR_URL} ] ; then \
         if [ ! -z "${DEADSNAKES_GPGKEY_URL}" ] ; then \
             mkdir -p -m 0755 /etc/apt/keyrings ; \
@@ -143,14 +143,14 @@ WORKDIR /workspace
 # pytorch will not appear as a vLLM dependency in all of the following steps
 # after this step
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
         uv pip install --system \
             --index-url ${PYTORCH_CUDA_NIGHTLY_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
-            "torch==2.8.0.dev20250318+cu128" "torchvision==0.22.0.dev20250319";  \
+            "torch==2.9.0.dev20250702+cu129" "torchvision==0.24.0.dev20250702";  \
         uv pip install --system \
             --index-url ${PYTORCH_CUDA_NIGHTLY_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
-            --pre pytorch_triton==3.3.0+gitab727c40; \
-    fi
+            --pre pytorch_triton==3.3.1+gitc8757738; \
+        export TORCH_CUDA_ARCH_LIST='12.0+PTX'; \
+        MAX_JOBS=16 XFORMERS_DISABLE_FLASH_ATTN=1 FORCE_CUDA=1 uv pip install --system --no-build-isolation "git+https://github.com/facebookresearch/xformers@v0.0.31"
 
 COPY requirements/common.txt requirements/common.txt
 COPY requirements/cuda.txt requirements/cuda.txt
@@ -162,7 +162,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # can be useful for both `dev` and `test`
 # explicitly set the list to avoid issues with torch 2.2
 # see https://github.com/pytorch/pytorch/pull/123243
-ARG torch_cuda_arch_list='7.0 7.5 8.0 8.9 9.0 10.0 12.0'
+#ARG torch_cuda_arch_list='7.0 7.5 8.0 8.9 9.0 10.0 12.0'
+ARG torch_cuda_arch_list='12.0'
 ENV TORCH_CUDA_ARCH_LIST=${torch_cuda_arch_list}
 # Override the arch list for flash-attn to reduce the binary size
 ARG vllm_fa_cmake_gpu_arches='80-real;90-real'
@@ -236,7 +237,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         && export SCCACHE_IDLE_TIMEOUT=0 \
         && export CMAKE_BUILD_TYPE=Release \
         && sccache --show-stats \
-        && python3 setup.py bdist_wheel --dist-dir=dist --py-limited-api=cp38 \
+        && sed -i 's/find_path(nvtx3_dir NAMES nvtx3 PATHS ${CUDA_INCLUDE_DIRS})/find_path(nvtx3_dir NAMES nvtx3 PATHS \/usr\/local\/cuda\/include ${CUDA_INCLUDE_DIRS})/' /usr/local/lib/python3.12/dist-packages/torch/share/cmake/Caffe2/public/cuda.cmake \
+        && sed -i 's/find_package_handle_standard_args(nvtx3 DEFAULT_MSG nvtx3_dir)/find_package_handle_standard_args(nvtx3 DEFAULT_MSG nvtx3_dir)\nif(NOT TARGET CUDA::nvtx3)\n  add_library(CUDA::nvtx3 INTERFACE IMPORTED)\n  target_include_directories(CUDA::nvtx3 SYSTEM INTERFACE "${CUDAToolkit_INCLUDE_DIRS}")\n  target_link_libraries(CUDA::nvtx3 INTERFACE ${CMAKE_DL_LIBS})\nendif()/' /usr/local/lib/python3.12/dist-packages/torch/share/cmake/Caffe2/public/cuda.cmake \
+        && sed -i -e '/if(nvtx3_FOUND)/,+8d' /usr/local/lib/python3.12/dist-packages/torch/share/cmake/Caffe2/public/cuda.cmake \
+        && cat /usr/local/lib/python3.12/dist-packages/torch/share/cmake/Caffe2/public/cuda.cmake \
+        && python3 setup.py bdist_wheel --dist-dir=dist --py-limited-api=cp39 \
         && sccache --show-stats; \
     fi
 
@@ -248,13 +253,17 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
         # Clean any existing CMake artifacts
         rm -rf .deps && \
         mkdir -p .deps && \
-        python3 setup.py bdist_wheel --dist-dir=dist --py-limited-api=cp38; \
+        sed -i 's/find_path(nvtx3_dir NAMES nvtx3 PATHS ${CUDA_INCLUDE_DIRS})/find_path(nvtx3_dir NAMES nvtx3 PATHS \/usr\/local\/cuda\/include ${CUDA_INCLUDE_DIRS})/' /usr/local/lib/python3.12/dist-packages/torch/share/cmake/Caffe2/public/cuda.cmake && \
+        sed -i 's/find_package_handle_standard_args(nvtx3 DEFAULT_MSG nvtx3_dir)/find_package_handle_standard_args(nvtx3 DEFAULT_MSG nvtx3_dir)\nif(NOT TARGET CUDA::nvtx3)\n  add_library(CUDA::nvtx3 INTERFACE IMPORTED)\n  target_include_directories(CUDA::nvtx3 SYSTEM INTERFACE "${CUDAToolkit_INCLUDE_DIRS}")\n  target_link_libraries(CUDA::nvtx3 INTERFACE ${CMAKE_DL_LIBS})\nendif()/' /usr/local/lib/python3.12/dist-packages/torch/share/cmake/Caffe2/public/cuda.cmake && \
+        sed -i -e '/if(nvtx3_FOUND)/,+8d' /usr/local/lib/python3.12/dist-packages/torch/share/cmake/Caffe2/public/cuda.cmake && \
+        cat /usr/local/lib/python3.12/dist-packages/torch/share/cmake/Caffe2/public/cuda.cmake && \
+        python3 setup.py bdist_wheel --dist-dir=dist --py-limited-api=cp39; \
     fi
 
 # Check the size of the wheel if RUN_WHEEL_CHECK is true
 COPY .buildkite/check-wheel-size.py check-wheel-size.py
 # sync the default value with .buildkite/check-wheel-size.py
-ARG VLLM_MAX_SIZE_MB=400
+ARG VLLM_MAX_SIZE_MB=600
 ENV VLLM_MAX_SIZE_MB=$VLLM_MAX_SIZE_MB
 ARG RUN_WHEEL_CHECK=true
 RUN if [ "$RUN_WHEEL_CHECK" = "true" ]; then \
@@ -361,14 +370,14 @@ RUN ldconfig /usr/local/cuda-$(echo $CUDA_VERSION | cut -d. -f1,2)/compat/
 # pytorch will not appear as a vLLM dependency in all of the following steps
 # after this step
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
         uv pip install --system \
             --index-url ${PYTORCH_CUDA_NIGHTLY_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
-            "torch==2.8.0.dev20250318+cu128" "torchvision==0.22.0.dev20250319" ; \
+            "torch==2.9.0.dev20250702+cu129" "torchvision==0.24.0.dev20250702";  \
         uv pip install --system \
             --index-url ${PYTORCH_CUDA_NIGHTLY_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
-            --pre pytorch_triton==3.3.0+gitab727c40 ; \
-    fi
+            --pre pytorch_triton==3.3.1+gitc8757738; \
+        export TORCH_CUDA_ARCH_LIST='12.0+PTX'; \
+        MAX_JOBS=16 XFORMERS_DISABLE_FLASH_ATTN=1 FORCE_CUDA=1 uv pip install --system --no-build-isolation "git+https://github.com/facebookresearch/xformers@v0.0.31"
 
 # Install vllm wheel first, so that torch etc will be installed.
 RUN --mount=type=bind,from=build,src=/workspace/dist,target=/vllm-workspace/dist \
@@ -381,7 +390,7 @@ RUN --mount=type=bind,from=build,src=/workspace/dist,target=/vllm-workspace/dist
 # $ export TORCH_CUDA_ARCH_LIST='7.5 8.0 8.9 9.0a 10.0a 12.0'
 # $ git clone https://github.com/flashinfer-ai/flashinfer.git --recursive
 # $ cd flashinfer
-# $ git checkout v0.2.6.post1
+# $ git checkout v0.2.7.post1
 # $ python -m flashinfer.aot
 # $ python -m build --no-isolation --wheel
 # $ ls -la dist
