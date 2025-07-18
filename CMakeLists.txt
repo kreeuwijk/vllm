@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.26)
 
+include(cmake/CPM.cmake)
+
+CPMAddPackage(
+    NAME NVTX
+    GITHUB_REPOSITORY NVIDIA/NVTX
+    GIT_TAG release-v3
+    SOURCE_SUBDIR c
+    )
+
 # When building directly using CMake, make sure you run the install step
 # (it places the .so files in the correct location).
 #
@@ -45,8 +54,8 @@ set(HIP_SUPPORTED_ARCHS "gfx906;gfx908;gfx90a;gfx942;gfx950;gfx1030;gfx1100;gfx1
 # requirements.txt files and should be kept consistent.  The ROCm torch
 # versions are derived from docker/Dockerfile.rocm
 #
-set(TORCH_SUPPORTED_VERSION_CUDA "2.7.1")
-set(TORCH_SUPPORTED_VERSION_ROCM "2.7.0")
+set(TORCH_SUPPORTED_VERSION_CUDA "2.9.0")
+set(TORCH_SUPPORTED_VERSION_ROCM "2.9.0")
 
 #
 # Try to find python package with an executable that exactly matches
@@ -78,6 +87,9 @@ endif()
 # etc.
 #
 find_package(Torch REQUIRED)
+
+find_package(CUDA  REQUIRED)
+include_directories("${CUDA_INCLUDE_DIRS}")
 
 # Supported NVIDIA architectures.
 # This check must happen after find_package(Torch) because that's when CMAKE_CUDA_COMPILER_VERSION gets defined
